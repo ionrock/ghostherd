@@ -55,9 +55,6 @@ Or with `use-package` integration:
   (ghostherd-notify-mode 1))
 ```
 
-Note: the repo is currently private, so straight will clone over SSH
-or your authenticated HTTPS credentials.
-
 ## Quick start
 
 1. Make sure herdr is running with at least one space.
