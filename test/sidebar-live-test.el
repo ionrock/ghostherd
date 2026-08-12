@@ -33,10 +33,20 @@
     (add-hook 'ghostherd-cache-update-hook #'ghostherd-sidebar--render)))
 (ghostherd-sidebar--render)
 
-;; 1. real spaces are listed
-(gh-test "renders-existing-spaces"
-         (string-match-p "normative" (gh-sidebar-text))
-         (format "%d chars" (length (gh-sidebar-text))))
+;; 1. the snapshot renders whatever spaces the current server has
+(let ((spaces (ghostherd-spaces)))
+  (gh-test "renders-existing-spaces"
+           (if spaces
+               (cl-some
+                (lambda (space)
+                  (string-match-p
+                   (regexp-quote (format "%s" (alist-get 'label space)))
+                   (gh-sidebar-text)))
+                spaces)
+             (string-match-p "no spaces" (gh-sidebar-text)))
+           (format "%d spaces, %d chars"
+                   (length spaces)
+                   (length (gh-sidebar-text)))))
 
 ;; 2. create a scratch space; event-driven re-render picks it up
 (defvar gh-wid (ghostherd-new-space "/tmp" "gh-sidebar-test"))

@@ -17,6 +17,8 @@
 ;;   r     rename thing at point
 ;;   b     jump to next blocked agent
 ;;   g     resync from herdr
+;;   l     lay out selected terminals beside the sidebar
+;;   L     restore the previous window configuration
 ;;   n/p   next/previous line
 ;;   q     quit window
 
@@ -40,8 +42,29 @@
   :type '(choice (const left) (const right))
   :group 'ghostherd)
 
+(defcustom ghostherd-sidebar-refresh-interval 2.0
+  "Seconds between authoritative sidebar refreshes.
+Nil disables periodic refresh.  Event-driven updates remain active."
+  :type '(choice (const :tag "Disabled" nil) number)
+  :group 'ghostherd)
+
 (defvar ghostherd-sidebar--folded (make-hash-table :test #'equal)
   "workspace_id -> t when the space's tabs are hidden.")
+
+(defvar ghostherd-sidebar--refresh-timer nil
+  "Timer used to reconcile the visible sidebar with herdr.")
+
+(defvar ghostherd-sidebar--refreshing nil
+  "Non-nil while a periodic sidebar refresh is in progress.")
+
+(defvar ghostherd-sidebar--saved-configurations (make-hash-table :test #'eq)
+  "Frame to window configuration saved before a ghostherd layout.")
+
+(defun ghostherd-sidebar--forget-frame (frame)
+  "Forget any saved layout for deleted FRAME."
+  (remhash frame ghostherd-sidebar--saved-configurations))
+
+(add-hook 'delete-frame-functions #'ghostherd-sidebar--forget-frame)
 
 ;;;; Status glyphs
 
@@ -109,6 +132,158 @@
 (defun ghostherd-sidebar--space-at-point ()
   (get-text-property (point) 'ghostherd-workspace-id))
 
+;;;; Refresh lifecycle
+
+(defun ghostherd-sidebar--visible-p ()
+  "Return non-nil when the sidebar is visible on any frame."
+  (when-let* ((buf (get-buffer ghostherd-sidebar-buffer-name)))
+    (get-buffer-window buf t)))
+
+(defun ghostherd-sidebar--stop-refresh-timer ()
+  "Cancel the periodic sidebar refresh timer."
+  (when (timerp ghostherd-sidebar--refresh-timer)
+    (cancel-timer ghostherd-sidebar--refresh-timer))
+  (setq ghostherd-sidebar--refresh-timer nil
+        ghostherd-sidebar--refreshing nil))
+
+(defun ghostherd-sidebar--refresh-tick ()
+  "Refresh sidebar state, or stop polling when it is no longer visible."
+  (if (not (ghostherd-sidebar--visible-p))
+      (ghostherd-sidebar--stop-refresh-timer)
+    (when (and ghostherd--connected
+               (not ghostherd-sidebar--refreshing))
+      (let ((ghostherd-sidebar--refreshing t))
+        (condition-case err
+            (ghostherd-resync)
+          (error
+           (message "ghostherd sidebar refresh failed: %s"
+                    (error-message-string err))))))))
+
+(defun ghostherd-sidebar--start-refresh-timer ()
+  "Start periodic refresh when configured, without duplicating timers."
+  (when (and ghostherd-sidebar-refresh-interval
+             (> ghostherd-sidebar-refresh-interval 0)
+             (not (timerp ghostherd-sidebar--refresh-timer)))
+    (setq ghostherd-sidebar--refresh-timer
+          (run-at-time ghostherd-sidebar-refresh-interval
+                       ghostherd-sidebar-refresh-interval
+                       #'ghostherd-sidebar--refresh-tick))))
+
+;;;; Layout
+
+(defun ghostherd-sidebar--tab-candidates ()
+  "Return completion candidates mapping display names to tab ids."
+  (cl-loop for space in (ghostherd-spaces)
+           for wid = (alist-get 'workspace_id space)
+           append
+           (cl-loop for tab in (ghostherd-tabs wid)
+                    for tab-id = (alist-get 'tab_id tab)
+                    for pane = (ghostherd-tab-pane tab-id)
+                    for status = (or (and pane (alist-get 'agent_status pane))
+                                     "unknown")
+                    collect
+                    (cons (format "%s / %s  [%s]  <%s>"
+                                  (alist-get 'label space)
+                                  (alist-get 'label tab)
+                                  status tab-id)
+                          tab-id))))
+
+(defun ghostherd-sidebar--read-layout-tabs ()
+  "Read one or more terminal tabs for a sidebar layout."
+  (let* ((candidates (ghostherd-sidebar--tab-candidates))
+         (at-point (and (derived-mode-p 'ghostherd-sidebar-mode)
+                        (ghostherd-sidebar--tab-at-point)))
+         (default (car (rassoc at-point candidates)))
+         (chosen (completing-read-multiple
+                  "Terminals (comma-separated): " candidates nil t
+                  nil nil default)))
+    (delete-dups (delq nil (mapcar (lambda (name) (cdr (assoc name candidates)))
+                                   chosen)))))
+
+(defun ghostherd-sidebar--prepare-buffer ()
+  "Create, initialize, and render the sidebar buffer."
+  (let ((buf (get-buffer-create ghostherd-sidebar-buffer-name)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'ghostherd-sidebar-mode)
+        (ghostherd-sidebar-mode)
+        (add-hook 'ghostherd-cache-update-hook #'ghostherd-sidebar--render)))
+    (ghostherd-sidebar--render)
+    buf))
+
+(defun ghostherd-sidebar--display-window ()
+  "Display and return the sidebar side window without selecting it."
+  (display-buffer-in-side-window
+   (ghostherd-sidebar--prepare-buffer)
+   `((side . ,ghostherd-sidebar-side)
+     (window-width . ,ghostherd-sidebar-width)
+     (dedicated . t))))
+
+(defun ghostherd-sidebar--main-leaf-window (frame)
+  "Return a live non-side window in FRAME's main window area."
+  (or (cl-find-if (lambda (window)
+                    (not (window-parameter window 'window-side)))
+                  (window-list frame 'nomini))
+      (user-error "Frame has no main window")))
+
+(defun ghostherd-sidebar--install-terminal-windows (main buffers)
+  "Split MAIN into a balanced vertical stack displaying BUFFERS."
+  (let ((windows (list main)))
+    (dotimes (_ (1- (length buffers)))
+      (let ((new (split-window (car (last windows)) nil 'below)))
+        (unless new
+          (user-error "Frame is too small for %d terminal windows"
+                      (length buffers)))
+        (setq windows (append windows (list new)))))
+    (cl-mapc #'set-window-buffer windows buffers)
+    ;; Balance only the main subtree.  Balancing the frame root also
+    ;; resizes side windows, which can make the sidebar consume half the frame.
+    (balance-windows (window-main-window (window-frame main)))
+    windows))
+
+;;;###autoload
+(defun ghostherd-sidebar-layout (tab-ids)
+  "Show the sidebar on the left and selected TAB-IDS on the right."
+  (interactive
+   (progn
+     (ghostherd--ensure)
+     (list (ghostherd-sidebar--read-layout-tabs))))
+  (unless tab-ids
+    (user-error "No terminals selected"))
+  (ghostherd--ensure)
+  (let* ((frame (selected-frame))
+         (old-config (current-window-configuration frame))
+         (already-saved (gethash frame ghostherd-sidebar--saved-configurations))
+         (buffers (mapcar (lambda (tab-id) (ghostherd--attach tab-id nil))
+                          tab-ids)))
+    (condition-case err
+        (progn
+          (unless already-saved
+            (puthash frame old-config ghostherd-sidebar--saved-configurations))
+          (delete-other-windows (ghostherd-sidebar--main-leaf-window frame))
+          (ghostherd-sidebar--display-window)
+          (let ((windows (ghostherd-sidebar--install-terminal-windows
+                          (ghostherd-sidebar--main-leaf-window frame) buffers)))
+            (ghostherd-sidebar--start-refresh-timer)
+            (select-window (car windows))))
+      (error
+       (set-window-configuration old-config)
+       (unless already-saved
+         (remhash frame ghostherd-sidebar--saved-configurations))
+       (signal (car err) (cdr err))))))
+
+;;;###autoload
+(defun ghostherd-sidebar-restore-layout ()
+  "Restore the selected frame's configuration from before its layout."
+  (interactive)
+  (let* ((frame (selected-frame))
+         (configuration (gethash frame ghostherd-sidebar--saved-configurations)))
+    (unless configuration
+      (user-error "No saved ghostherd layout for this frame"))
+    (remhash frame ghostherd-sidebar--saved-configurations)
+    (set-window-configuration configuration)
+    (unless (ghostherd-sidebar--visible-p)
+      (ghostherd-sidebar--stop-refresh-timer))))
+
 ;;;; Commands
 
 (defun ghostherd-sidebar-visit ()
@@ -161,10 +336,9 @@
      (t (user-error "Nothing at point")))))
 
 (defun ghostherd-sidebar-refresh ()
-  "Resync from herdr and re-render."
+  "Resync from herdr; the cache update hook re-renders the sidebar."
   (interactive)
-  (ghostherd-resync)
-  (ghostherd-sidebar--render))
+  (ghostherd-resync))
 
 (defvar ghostherd-sidebar-mode-map
   (let ((map (make-sparse-keymap)))
@@ -176,6 +350,8 @@
     (define-key map (kbd "r") #'ghostherd-sidebar-rename)
     (define-key map (kbd "b") #'ghostherd-next-blocked)
     (define-key map (kbd "g") #'ghostherd-sidebar-refresh)
+    (define-key map (kbd "l") #'ghostherd-sidebar-layout)
+    (define-key map (kbd "L") #'ghostherd-sidebar-restore-layout)
     (define-key map (kbd "n") #'next-line)
     (define-key map (kbd "p") #'previous-line)
     map)
@@ -184,7 +360,8 @@
 (define-derived-mode ghostherd-sidebar-mode special-mode "ghostherd"
   "Sidebar listing herdr spaces, tabs, and agent state."
   (setq truncate-lines t
-        cursor-in-non-selected-windows nil))
+        cursor-in-non-selected-windows nil)
+  (add-hook 'kill-buffer-hook #'ghostherd-sidebar--stop-refresh-timer nil t))
 
 ;;;; Entry points
 
@@ -193,18 +370,9 @@
   "Show the sidebar, connecting to herdr if needed."
   (interactive)
   (ghostherd--ensure)
-  (let ((buf (get-buffer-create ghostherd-sidebar-buffer-name)))
-    (with-current-buffer buf
-      (unless (derived-mode-p 'ghostherd-sidebar-mode)
-        (ghostherd-sidebar-mode)
-        (add-hook 'ghostherd-cache-update-hook
-                  #'ghostherd-sidebar--render)))
-    (ghostherd-sidebar--render)
-    (select-window
-     (display-buffer-in-side-window
-      buf `((side . ,ghostherd-sidebar-side)
-            (window-width . ,ghostherd-sidebar-width)
-            (dedicated . t))))))
+  (let ((window (ghostherd-sidebar--display-window)))
+    (ghostherd-sidebar--start-refresh-timer)
+    (select-window window)))
 
 ;;;###autoload
 (defun ghostherd-sidebar-toggle ()
@@ -213,7 +381,10 @@
   (let* ((buf (get-buffer ghostherd-sidebar-buffer-name))
          (win (and buf (get-buffer-window buf t))))
     (if win
-        (delete-window win)
+        (progn
+          (delete-window win)
+          (unless (ghostherd-sidebar--visible-p)
+            (ghostherd-sidebar--stop-refresh-timer)))
       (ghostherd-sidebar-open))))
 
 ;; `w' in the command map, promised by DESIGN.md.

@@ -89,6 +89,7 @@ can see what's tweakable:
   (ghostherd-sidebar-buffer-name "*ghostherd*")
   (ghostherd-sidebar-width 34)
   (ghostherd-sidebar-side 'left)
+  (ghostherd-sidebar-refresh-interval 2.0) ; nil disables polling
   :config
   (require 'ghostherd-notify)
   (require 'ghostherd-sidebar)
@@ -237,6 +238,25 @@ Which side of the frame the sidebar occupies: `'left` or `'right`.
       ghostherd-sidebar-width 40)
 ```
 
+#### `ghostherd-sidebar-refresh-interval` (default `2.0`)
+
+Seconds between authoritative `session.snapshot` refreshes while the
+sidebar is visible. Push events still update it immediately; polling
+reconciles missed or unavailable events. Set this to `nil` to use only
+the event stream. The timer stops when the sidebar is hidden or killed.
+
+### Terminal layout
+
+From the sidebar, press `l` and select one or more terminals with
+`completing-read-multiple` (comma-separated). ghostherd keeps the
+sidebar in a dedicated side window and asks Emacs to arrange the chosen
+attach buffers in the main window area. Press `L` to restore the window
+configuration that existed before the layout. Re-running `l` changes
+the selected terminals without replacing that saved configuration.
+
+The same commands are available as `M-x ghostherd-sidebar-layout` and
+`M-x ghostherd-sidebar-restore-layout`.
+
 ## Keymap
 
 `ghostherd-command-map` is a prefix map; bind it wherever you like
@@ -288,6 +308,8 @@ extras:
 | `r`   | Rename tab or space at point                             |
 | `b`   | Jump to next blocked agent                               |
 | `g`   | Resync from herdr                                        |
+| `l`   | Select terminals and arrange them beside the sidebar      |
+| `L`   | Restore the pre-layout window configuration               |
 | `n`/`p` | Next/previous line                                     |
 | `q`   | Hide the sidebar                                         |
 

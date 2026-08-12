@@ -188,7 +188,16 @@ safe in-terminal surface.
 
 `RET` visit · `TAB` fold section · `c`/`C` new tab/space at point ·
 `k` close at point · `r` rename · `b` next blocked · `g` refresh ·
-`q` quit window. Rows: space → tabs, each with a state face.
+`l` selected-terminal layout · `L` restore layout · `q` quit window.
+Rows: space → tabs, each with a state face.
+
+The event stream remains the low-latency update path. While the sidebar
+is visible, a configurable timer periodically fetches an authoritative
+`session.snapshot` to reconcile missed state and stops when the sidebar
+is no longer shown. Layouts use Emacs side windows, `window-main-window`,
+`split-window`, balancing, and window configurations; ghostherd does not
+maintain its own window geometry model. herdr continues to own terminal
+state and Emacs exclusively owns presentation.
 
 ### Attach buffers
 
