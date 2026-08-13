@@ -63,6 +63,18 @@ $XDG_CONFIG_HOME/herdr/herdr.sock."
   "Seconds to wait for a synchronous herdr API response."
   :type 'number)
 
+(defcustom ghostherd-herdr-auto-start t
+  "When non-nil, start a herdr server if none is running.
+On connection failure (missing socket or refused connection),
+ghostherd spawns a detached headless server (`herdr server',
+plus `--session' when `ghostherd-session' is set) and retries
+until `ghostherd-herdr-start-timeout' elapses."
+  :type 'boolean)
+
+(defcustom ghostherd-herdr-start-timeout 10.0
+  "Seconds to wait for an auto-started herdr server to accept connections."
+  :type 'number)
+
 (defvar ghostherd-client--request-counter 0
   "Monotonic counter used to build request ids.")
 
@@ -91,21 +103,68 @@ $HERDR_SOCKET_PATH, then the default session socket."
 
 ;;;; Low-level connection
 
+(defun ghostherd-client--connect (name filter sentinel path)
+  "Open a socket connection to PATH.
+NAME names the process; FILTER and SENTINEL are attached to it."
+  (make-network-process
+   :name name
+   :family 'local
+   :service path
+   :coding 'utf-8-unix
+   :noquery t
+   :filter filter
+   :sentinel (or sentinel #'ignore)))
+
+(defun ghostherd-client--start-herdr (path)
+  "Start a detached headless herdr server and wait for PATH to accept.
+Spawns via a shell with nohup so the server survives Emacs exiting.
+Signals an error when the socket is not accepting connections within
+`ghostherd-herdr-start-timeout' seconds."
+  (let* ((args (append (list "server")
+                       (and ghostherd-session
+                            (list "--session" ghostherd-session))))
+         (cmd (concat "nohup "
+                      (mapconcat #'shell-quote-argument
+                                 (cons ghostherd-herdr-program args) " ")
+                      " >/dev/null 2>&1 &")))
+    (message "ghostherd: herdr not running, starting `%s server'..."
+             ghostherd-herdr-program)
+    (call-process-shell-command cmd)
+    (let ((deadline (+ (float-time) ghostherd-herdr-start-timeout)))
+      (catch 'up
+        (while (< (float-time) deadline)
+          (when (file-exists-p path)
+            (condition-case nil
+                (let ((probe (make-network-process
+                              :name "ghostherd-herdr-probe"
+                              :family 'local :service path :noquery t)))
+                  (delete-process probe)
+                  (message "ghostherd: herdr server started")
+                  (throw 'up t))
+              (file-error nil)))
+          (sleep-for 0.2))
+        (error "ghostherd: started herdr but %s did not accept connections within %gs"
+               path ghostherd-herdr-start-timeout)))))
+
 (defun ghostherd-client--open (name filter &optional sentinel)
   "Open a connection to the herdr socket.
 NAME names the process; FILTER and SENTINEL are attached to it.
-Signals an error when the socket does not exist."
+When the socket is missing or refuses connections (herdr not
+running) and `ghostherd-herdr-auto-start' is non-nil, starts a
+headless herdr server first.  Signals an error when herdr stays
+unreachable."
   (let ((path (ghostherd-client-socket-path)))
-    (unless (file-exists-p path)
-      (error "herdr socket not found at %s (is herdr running?)" path))
-    (make-network-process
-     :name name
-     :family 'local
-     :service path
-     :coding 'utf-8-unix
-     :noquery t
-     :filter filter
-     :sentinel (or sentinel #'ignore))))
+    (condition-case err
+        (progn
+          (unless (file-exists-p path)
+            (signal 'file-missing
+                    (list "herdr socket not found (is herdr running?)" path)))
+          (ghostherd-client--connect name filter sentinel path))
+      (file-error
+       (unless ghostherd-herdr-auto-start
+         (signal (car err) (cdr err)))
+       (ghostherd-client--start-herdr path)
+       (ghostherd-client--connect name filter sentinel path)))))
 
 (defun ghostherd-client--json-encode (object)
   "Encode OBJECT as a JSON line for herdr."

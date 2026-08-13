@@ -23,9 +23,10 @@ emulation), so you can herd your agents without leaving Emacs:
   dynamic module).
 - [ghostel](https://github.com/dakra/ghostel) installed and working
   (`M-x ghostel` should give you a terminal).
-- `herdr` 0.7.5+ on your `PATH` with a running server (`herdr` in a
-  terminal, or its daemon). ghostherd talks to the same API socket the
-  herdr TUI uses.
+- `herdr` 0.7.5+ on your `PATH`. ghostherd talks to the same API
+  socket the herdr TUI uses; if no server is running, ghostherd starts
+  a headless one for you (`herdr server`) — see
+  `ghostherd-herdr-auto-start`.
 
 ## Installation (straight.el)
 
@@ -57,11 +58,11 @@ Or with `use-package` integration:
 
 ## Quick start
 
-1. Make sure herdr is running with at least one space.
-2. `M-x ghostherd-connect` (commands do this on demand too).
-3. `C-c t s` — pick a space; its active tab opens in an attach buffer.
-4. `C-c t w` — toggle the sidebar.
-5. `M-x ghostherd-notify-mode` — turn on alerts and the mode-line
+1. `M-x ghostherd-connect` (commands do this on demand too). If herdr
+   isn't running, a headless server is started automatically.
+2. `C-c t s` — pick a space; its active tab opens in an attach buffer.
+3. `C-c t w` — toggle the sidebar.
+4. `M-x ghostherd-notify-mode` — turn on alerts and the mode-line
    lighter (or enable it in your init as above).
 
 ## Example init.el
@@ -144,6 +145,21 @@ set explicitly.
 
 Seconds to wait for a synchronous API response before signaling an
 error. Raise it if you run herdr on a loaded machine.
+
+#### `ghostherd-herdr-auto-start` (default `t`)
+
+When non-nil and connecting fails because no herdr server is running
+(missing or refusing socket), ghostherd spawns a detached headless
+server — `herdr server`, with `--session NAME` when
+`ghostherd-session` is set — waits for the socket to accept
+connections, and retries. The server outlives Emacs, so agents keep
+running after you quit. Set to `nil` to get the old "is herdr
+running?" error instead.
+
+#### `ghostherd-herdr-start-timeout` (default `10.0`)
+
+Seconds to wait for an auto-started herdr server to accept
+connections before signaling an error.
 
 ### Spaces and attach buffers (ghostherd.el)
 
