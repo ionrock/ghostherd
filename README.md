@@ -145,7 +145,13 @@ set explicitly.
 Seconds to wait for a synchronous API response before signaling an
 error. Raise it if you run herdr on a loaded machine.
 
-### Attach buffers (ghostherd.el)
+### Spaces and attach buffers (ghostherd.el)
+
+`ghostherd-new-space` leaves the workspace label unspecified by default,
+so herdr names it from the shell's current directory and automatically
+updates that name after `cd`. Passing a non-nil `LABEL` from Lisp creates
+an explicitly named space instead; explicit names do not follow directory
+changes.
 
 #### `ghostherd-attach-buffer-name-format` (default `"*herd:%s/%s*"`)
 
@@ -269,7 +275,7 @@ The same commands are available as `M-x ghostherd-sidebar-layout` and
 | Key       | Command                    | What it does                                  |
 |-----------|----------------------------|-----------------------------------------------|
 | `C-c t s` | `ghostherd-switch-space`   | Pick a space; attach its active tab           |
-| `C-c t S` | `ghostherd-new-space`      | New space (defaults to current project root)  |
+| `C-c t S` | `ghostherd-new-space`      | New auto-named space at current project root  |
 | `C-c t t` | `ghostherd-switch-tab`     | Pick a tab in the current space               |
 | `C-c t c` | `ghostherd-new-tab`        | New tab in the current space, attach it       |
 | `C-c t n` | `ghostherd-next-tab`       | Next tab in this buffer's space               |

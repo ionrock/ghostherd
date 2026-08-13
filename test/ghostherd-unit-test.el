@@ -1,0 +1,47 @@
+;;; ghostherd-unit-test.el --- unit tests for ghostherd -*- lexical-binding: t; -*-
+
+;; Run: emacs --batch -Q -L lisp -l test/ghostherd-unit-test.el
+
+(require 'ert)
+(require 'ghostherd)
+
+(defun gh-core-test--create-result ()
+  '((workspace . ((workspace_id . "w-test") (label . "tmp")))
+    (tab . ((tab_id . "w-test:t1") (workspace_id . "w-test")))
+    (root_pane . ((pane_id . "w-test:p1")
+                  (tab_id . "w-test:t1")
+                  (workspace_id . "w-test")
+                  (terminal_id . "term-test")))))
+
+(ert-deftest ghostherd-new-space-omits-default-label-for-herdr-auto-naming ()
+  (let ((ghostherd--workspaces (make-hash-table :test #'equal))
+        (ghostherd--tabs (make-hash-table :test #'equal))
+        (ghostherd--panes (make-hash-table :test #'equal))
+        (ghostherd--verified-panes (make-hash-table :test #'equal))
+        request-params)
+    (cl-letf (((symbol-function 'ghostherd--ensure) #'ignore)
+              ((symbol-function 'ghostherd--sync-pane-subscriptions) #'ignore)
+              ((symbol-function 'ghostherd-client-request)
+               (lambda (_method params)
+                 (setq request-params params)
+                 (gh-core-test--create-result))))
+      (ghostherd-new-space "/tmp")
+      (should (equal (alist-get 'cwd request-params) "/tmp"))
+      (should-not (assq 'label request-params)))))
+
+(ert-deftest ghostherd-new-space-preserves-explicit-label ()
+  (let ((ghostherd--workspaces (make-hash-table :test #'equal))
+        (ghostherd--tabs (make-hash-table :test #'equal))
+        (ghostherd--panes (make-hash-table :test #'equal))
+        (ghostherd--verified-panes (make-hash-table :test #'equal))
+        request-params)
+    (cl-letf (((symbol-function 'ghostherd--ensure) #'ignore)
+              ((symbol-function 'ghostherd--sync-pane-subscriptions) #'ignore)
+              ((symbol-function 'ghostherd-client-request)
+               (lambda (_method params)
+                 (setq request-params params)
+                 (gh-core-test--create-result))))
+      (ghostherd-new-space "/tmp" "my-space")
+      (should (equal (alist-get 'label request-params) "my-space")))))
+
+(ert-run-tests-batch-and-exit)

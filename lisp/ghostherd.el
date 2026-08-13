@@ -503,18 +503,18 @@ to the buffer."
 ;;;###autoload
 (defun ghostherd-new-space (dir &optional label)
   "Create a space rooted at DIR (default: current project root).
-LABEL defaults to DIR's base name."
+When LABEL is nil, let herdr name the space from its current directory
+and keep that name updated as the shell changes directories."
   (interactive
    (let* ((proj (project-current))
           (root (if proj (project-root proj)
                   (read-directory-name "Space directory: "))))
      (list (expand-file-name root))))
   (ghostherd--ensure)
-  (let* ((label (or label (file-name-nondirectory
-                           (directory-file-name dir))))
-         (result (ghostherd-client-request
+  (let* ((result (ghostherd-client-request
                   "workspace.create"
-                  `((cwd . ,dir) (label . ,label))))
+                  `((cwd . ,dir)
+                    ,@(when label `((label . ,label))))))
          (wid (alist-get 'workspace_id (alist-get 'workspace result)))
          (tab-id (alist-get 'tab_id (alist-get 'tab result))))
     ;; Cache the records now; events will confirm.
